@@ -1,0 +1,54 @@
+name: Deploy to SiteGround
+
+# Uploads index.html to gymfit.rs over SFTP whenever main changes.
+# Needs two repository secrets: SFTP_KEY (the private key) and SFTP_KEY_PASSPHRASE (its password; leave unset if the key has none).
+
+on:
+  push:
+    branches: [main]
+    paths: [index.html, .github/workflows/deploy.yml]
+  workflow_dispatch:
+
+env:
+  SFTP_HOST: sftp.siteground.net
+  SFTP_PORT: "18765"
+  SFTP_USER: sftp6234-d725e521
+  REMOTE_DIR: /gymfit.rs/gymfit.rs/public_html
+  # Fingerprint shown on the first manual connection; the job stops if the server presents a different one.
+  HOST_FINGERPRINT: SHA256:PvEri3iYKZeVBGSPE54fg2bDTfYxGpHqnRc+nOZMj/Q
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH key and verify the server
+        env:
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          SFTP_KEY_PASSPHRASE: ${{ secrets.SFTP_KEY_PASSPHRASE }}
+        run: |
+          if [ -z "$SFTP_KEY" ]; then echo "::error::The SFTP_KEY secret is not set"; exit 1; fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Strip the passphrase from this temporary copy so sftp can run unattended.
+          if [ -n "$SFTP_KEY_PASSPHRASE" ]; then
+            ssh-keygen -p -P "$SFTP_KEY_PASSPHRASE" -N "" -f ~/.ssh/deploy_key > /dev/null
+          fi
+          ssh-keyscan -t ed25519 -p "$SFTP_PORT" "$SFTP_HOST" > ~/.ssh/known_hosts 2> /dev/null
+          if ! ssh-keygen -lf ~/.ssh/known_hosts | grep -qF "$HOST_FINGERPRINT"; then
+            echo "::error::Server fingerprint does not match the expected one"; ssh-keygen -lf ~/.ssh/known_hosts; exit 1
+          fi
+
+      - name: Upload index.html
+        run: |
+          sftp -i ~/.ssh/deploy_key -P "$SFTP_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -b - "$SFTP_USER@$SFTP_HOST" <<EOF
+          cd $REMOTE_DIR
+          put index.html
+          ls -l index.html
+          EOF
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
